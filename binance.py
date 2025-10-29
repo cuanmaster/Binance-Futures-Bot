@@ -10,16 +10,31 @@ import asyncio
 import telegram
 from telegram import Bot
 from concurrent.futures import ThreadPoolExecutor
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 class BinanceFuturesBot:
-    def __init__(self, api_key, api_secret, gemini_api_key, telegram_token, telegram_chat_id):
+    def __init__(self):
         """
-        Inisialisasi bot trading
+        Inisialisasi bot trading dengan environment variables
         """
+        # Load configuration from environment
+        self.api_key = os.getenv('BINANCE_API_KEY')
+        self.api_secret = os.getenv('BINANCE_API_SECRET')
+        self.gemini_api_key = os.getenv('GEMINI_API_KEY')
+        self.telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        
+        # Validate required environment variables
+        self._validate_environment()
+        
         # Setup Binance
         self.exchange = ccxt.binance({
-            'apiKey': api_key,
-            'secret': api_secret,
+            'apiKey': self.api_key,
+            'secret': self.api_secret,
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'future',
@@ -27,44 +42,55 @@ class BinanceFuturesBot:
         })
         
         # Setup Gemini AI
-        genai.configure(api_key=gemini_api_key)
+        genai.configure(api_key=self.gemini_api_key)
         self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Setup Telegram Bot
-        self.telegram_bot = Bot(token=telegram_token)
-        self.telegram_chat_id = telegram_chat_id
+        self.telegram_bot = Bot(token=self.telegram_token)
+        self.telegram_chat_id = self.telegram_chat_id
         
-        # Multi-pair symbols
-        self.symbols = [
-            'BTC/USDT',
-            'ETH/USDT',
-            'BNB/USDT',
-            'SOL/USDT',
-            'XRP/USDT'
-        ]
+        # Multi-pair symbols from environment
+        symbols_env = os.getenv('TRADING_SYMBOLS', 'BTC/USDT,ETH/USDT,BNB/USDT,SOL/USDT,XRP/USDT')
+        self.symbols = [symbol.strip() for symbol in symbols_env.split(',')]
         
-        # Trading parameters
-        self.timeframe = '15m'
-        self.leverage = 10
-        self.risk_percent = 2  # Risk 2% per trade
-        self.take_profit_percent = 3  # 3% profit target
-        self.stop_loss_percent = 1.5  # 1.5% stop loss
-        self.max_positions = 3  # Maximum concurrent positions
+        # Trading parameters from environment
+        self.timeframe = os.getenv('TIMEFRAME', '15m')
+        self.leverage = int(os.getenv('TRADING_LEVERAGE', '10'))
+        self.risk_percent = float(os.getenv('RISK_PERCENT', '2'))
+        self.take_profit_percent = float(os.getenv('TAKE_PROFIT_PERCENT', '3'))
+        self.stop_loss_percent = float(os.getenv('STOP_LOSS_PERCENT', '1.5'))
+        self.max_positions = int(os.getenv('MAX_POSITIONS', '3'))
         
-        # AI optimization parameters
-        self.ai_threshold = 3  # Minimum tech score untuk panggil AI (default: 3)
-        self.ai_min_confidence = 70  # Minimum AI confidence untuk trade
+        # AI optimization parameters from environment
+        self.ai_threshold = int(os.getenv('AI_THRESHOLD', '3'))
+        self.ai_min_confidence = float(os.getenv('AI_MIN_CONFIDENCE', '70'))
         
-        # Statistics
+        # Initialize tracking variables
+        self.positions = {}
+        self.orders = {}
         self.total_trades = 0
         self.winning_trades = 0
         self.total_profit = 0
-        self.ai_requests = 0  # Track AI requests
-        self.ai_requests_saved = 0  # Track requests yang dihemat
+        self.ai_requests = 0
+        self.ai_requests_saved = 0
         
         print(f"✅ Bot initialized for {len(self.symbols)} pairs")
         self.send_telegram_sync(f"🤖 Bot Started!\n\nSymbols: {', '.join(self.symbols)}\nLeverage: {self.leverage}x\nMax Positions: {self.max_positions}")
         self.set_leverage_all()
+    
+    def _validate_environment(self):
+        """Validate that all required environment variables are set"""
+        required_vars = [
+            'BINANCE_API_KEY',
+            'BINANCE_API_SECRET', 
+            'GEMINI_API_KEY',
+            'TELEGRAM_BOT_TOKEN',
+            'TELEGRAM_CHAT_ID'
+        ]
+        
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
     
     def send_telegram_sync(self, message):
         """Send telegram notification synchronously"""
@@ -91,7 +117,7 @@ class BinanceFuturesBot:
                 # Method yang benar untuk set leverage di Binance Futures
                 self.exchange.set_leverage(
                     leverage=self.leverage,
-                    symbol=symbol
+                    symbol=symbol.replace('/', '')
                 )
                 print(f"✅ Leverage set to {self.leverage}x for {symbol}")
             except Exception as e:
@@ -146,6 +172,8 @@ class BinanceFuturesBot:
     def analyze_with_gemini(self, symbol, df):
         """Analisis market menggunakan Gemini AI"""
         try:
+            self.ai_requests += 1
+            
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             
@@ -641,25 +669,30 @@ Status: Position Active ✅
                 print(f"⚠️ Invalid indicators for {symbol}")
                 return
             
-            # Get signals
+            # Get technical signals first
             tech_signals, tech_score = self.get_technical_signal(df)
-            ai_analysis = self.analyze_with_gemini(symbol, df)
             
-            print(f"🔍 {symbol} | Tech Score: {tech_score} | AI: {ai_analysis['signal']} ({ai_analysis['confidence']}%)")
-            
-            # Decision making
-            if ai_analysis['confidence'] >= 70 and abs(tech_score) >= 2:
-                signal = ai_analysis['signal']
+            # Only call AI if technical score meets threshold
+            if abs(tech_score) >= self.ai_threshold:
+                ai_analysis = self.analyze_with_gemini(symbol, df)
+                print(f"🔍 {symbol} | Tech Score: {tech_score} | AI: {ai_analysis['signal']} ({ai_analysis['confidence']}%)")
                 
-                # Confirm AI and technical signals align
-                if (signal == 'LONG' and tech_score > 0) or (signal == 'SHORT' and tech_score < 0):
-                    current_price = df.iloc[-1]['close']
+                # Decision making with AI
+                if ai_analysis['confidence'] >= self.ai_min_confidence and abs(tech_score) >= 2:
+                    signal = ai_analysis['signal']
                     
-                    print(f"🎯 Trading Signal for {symbol}: {signal}")
-                    print(f"Confidence: {ai_analysis['confidence']}%")
-                    
-                    # Open position
-                    self.open_position(symbol, signal, current_price, df, ai_analysis['reasoning'])
+                    # Confirm AI and technical signals align
+                    if (signal == 'LONG' and tech_score > 0) or (signal == 'SHORT' and tech_score < 0):
+                        current_price = df.iloc[-1]['close']
+                        
+                        print(f"🎯 Trading Signal for {symbol}: {signal}")
+                        print(f"Confidence: {ai_analysis['confidence']}%")
+                        
+                        # Open position
+                        self.open_position(symbol, signal, current_price, df, ai_analysis['reasoning'])
+            else:
+                print(f"🔍 {symbol} | Tech Score: {tech_score} | Skipping AI (below threshold)")
+                self.ai_requests_saved += 1
             
         except KeyError as ke:
             print(f"❌ KeyError analyzing {symbol}: {ke} - Possibly missing data or position info")
@@ -683,6 +716,10 @@ Status: Position Active ✅
 📊 Win Rate: {win_rate:.1f}%
 💰 Total Profit: ${self.total_profit:.2f}
 
+🤖 AI Statistics:
+- AI Requests: {self.ai_requests}
+- AI Requests Saved: {self.ai_requests_saved}
+
 🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """
             
@@ -698,6 +735,8 @@ Status: Position Active ✅
         print(f"Timeframe: {self.timeframe}")
         print(f"Leverage: {self.leverage}x")
         print(f"Max Positions: {self.max_positions}")
+        print(f"AI Threshold: {self.ai_threshold}")
+        print(f"AI Min Confidence: {self.ai_min_confidence}%")
         print("-" * 50)
         
         last_report_time = datetime.now()
@@ -733,21 +772,15 @@ Status: Position Active ✅
 
 # ============= USAGE =============
 if __name__ == "__main__":
-    # CONFIGURATION - Ganti dengan API keys Anda
-    BINANCE_API_KEY = "your_binance_api_key"
-    BINANCE_API_SECRET = "your_binance_api_secret"
-    GEMINI_API_KEY = "your_gemini_api_key"
-    TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
-    TELEGRAM_CHAT_ID = "your_telegram_chat_id"
-    
-    # Create and run bot
-    bot = BinanceFuturesBot(
-        api_key=BINANCE_API_KEY,
-        api_secret=BINANCE_API_SECRET,
-        gemini_api_key=GEMINI_API_KEY,
-        telegram_token=TELEGRAM_BOT_TOKEN,
-        telegram_chat_id=TELEGRAM_CHAT_ID
-    )
-    
-    # Start trading
-    bot.run()
+    try:
+        # Create and run bot dengan environment variables
+        bot = BinanceFuturesBot()
+        
+        # Start trading
+        bot.run()
+        
+    except ValueError as e:
+        print(f"❌ Configuration Error: {e}")
+        print("Please check your .env file and ensure all required variables are set.")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
