@@ -1,0 +1,9 @@
+ccxt==4.3.34
+pandas==2.2.2
+numpy==1.26.4
+python-dotenv==1.0.1
+google-generativeai==0.3.2
+TA-Lib==0.4.28
+python-telegram-bot==21.10
+asyncio==3.4.3
+python-dateutil==2.9.0.post0
