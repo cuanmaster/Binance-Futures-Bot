@@ -51,14 +51,16 @@ class BinanceFuturesBot:
         self.stop_loss_percent = 1.5  # 1.5% stop loss
         self.max_positions = 3  # Maximum concurrent positions
         
-        # Trading state untuk multi-pair
-        self.positions = {}  # {symbol: position_data}
-        self.orders = {}  # {symbol: [order_ids]}
+        # AI optimization parameters
+        self.ai_threshold = 3  # Minimum tech score untuk panggil AI (default: 3)
+        self.ai_min_confidence = 70  # Minimum AI confidence untuk trade
         
         # Statistics
         self.total_trades = 0
         self.winning_trades = 0
         self.total_profit = 0
+        self.ai_requests = 0  # Track AI requests
+        self.ai_requests_saved = 0  # Track requests yang dihemat
         
         print(f"✅ Bot initialized for {len(self.symbols)} pairs")
         self.send_telegram_sync(f"🤖 Bot Started!\n\nSymbols: {', '.join(self.symbols)}\nLeverage: {self.leverage}x\nMax Positions: {self.max_positions}")
@@ -639,30 +641,14 @@ Status: Position Active ✅
                 print(f"⚠️ Invalid indicators for {symbol}")
                 return
             
-            # STEP 1: Get technical signals first (FREE, no API call)
+            # Get signals
             tech_signals, tech_score = self.get_technical_signal(df)
+            ai_analysis = self.analyze_with_gemini(symbol, df)
             
-            print(f"🔍 {symbol} | Tech Score: {tech_score} | Signals: {len(tech_signals)}")
+            print(f"🔍 {symbol} | Tech Score: {tech_score} | AI: {ai_analysis['signal']} ({ai_analysis['confidence']}%)")
             
-            # STEP 2: Only call AI if there's strong technical signal
-            # Threshold: tech_score >= 3 or <= -3 (strong signal)
-            ai_analysis = None
-            
-            if abs(tech_score) >= 3:
-                print(f"🤖 Strong technical signal detected for {symbol}, consulting AI...")
-                ai_analysis = self.analyze_with_gemini(symbol, df)
-                print(f"   AI Response: {ai_analysis['signal']} ({ai_analysis['confidence']}%)")
-            else:
-                print(f"⏸️ Weak technical signal for {symbol} (score: {tech_score}), skipping AI")
-                ai_analysis = {
-                    'signal': 'HOLD',
-                    'confidence': 0,
-                    'reasoning': 'Technical score too weak, AI not consulted'
-                }
-            
-            # STEP 3: Decision making with both technical and AI
-            # Require BOTH strong technical (>= 2) AND high AI confidence (>= 70)
-            if abs(tech_score) >= 2 and ai_analysis['confidence'] >= 70:
+            # Decision making
+            if ai_analysis['confidence'] >= 70 and abs(tech_score) >= 2:
                 signal = ai_analysis['signal']
                 
                 # Confirm AI and technical signals align
@@ -670,12 +656,10 @@ Status: Position Active ✅
                     current_price = df.iloc[-1]['close']
                     
                     print(f"🎯 Trading Signal for {symbol}: {signal}")
-                    print(f"   Tech Score: {tech_score} | AI Confidence: {ai_analysis['confidence']}%")
+                    print(f"Confidence: {ai_analysis['confidence']}%")
                     
                     # Open position
                     self.open_position(symbol, signal, current_price, df, ai_analysis['reasoning'])
-                else:
-                    print(f"⚠️ Signal mismatch for {symbol}: Tech={tech_score}, AI={signal}")
             
         except KeyError as ke:
             print(f"❌ KeyError analyzing {symbol}: {ke} - Possibly missing data or position info")
